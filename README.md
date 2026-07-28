@@ -2,8 +2,6 @@
 
 > **A real-time, multi-modal generative art and generative sound engine built for Hack the Arts.**
 
-[![Live Demo](https://andres-dmm.github.io/synesthetic-canvas-WEB/)
-
 ---
 
 ## 🌟 Overview
