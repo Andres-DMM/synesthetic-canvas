@@ -2,8 +2,7 @@
 
 > **A real-time, multi-modal generative art and generative sound engine built for Hack the Arts.**
 
-[![Live Demo](https://img.shields.io/badge/Live_Demo-Click_Here-brightgreen?style=for-the-badge)](YOUR_DEPLOYED_URL_HERE)
-[![Submission Video](https://img.shields.io/badge/Demo_Video-Watch_Now-blue?style=for-the-badge)](YOUR_YOUTUBE_OR_LOOM_LINK_HERE)
+[![Live Demo](https://andres-dmm.github.io/synesthetic-canvas-WEB/)
 
 ---
 
