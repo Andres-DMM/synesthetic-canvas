@@ -10,6 +10,10 @@
 <!-- p5.js (WebGL renderer + video capture). Audio uses the native Web Audio API. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
 
+<!-- ml5.js v1 — client-side AI (handPose + faceMesh). Runs 100% in-browser via
+     TFJS/MediaPipe WASM. No backend, no API keys, no network calls after load. -->
+<script src="https://unpkg.com/ml5@1/dist/ml5.js"></script>
+
 <style>
   /* ============================================================
      DESIGN TOKENS  (3 neutrals + 1 brand + 1 accent)
@@ -110,7 +114,13 @@
   #hud{
     position:fixed; top:16px; right:16px; z-index:30;
     width:274px; padding:12px; user-select:none;
+    /* The deck grew with the AI controls — keep it inside the viewport. */
+    max-height:calc(100vh - 32px); overflow-y:auto; overscroll-behavior:contain;
+    scrollbar-width:thin; scrollbar-color:rgba(238,241,246,.22) transparent;
   }
+  #hud::-webkit-scrollbar{ width:6px; }
+  #hud::-webkit-scrollbar-thumb{ background:rgba(238,241,246,.22); border-radius:999px; }
+  #hud::-webkit-scrollbar-track{ background:transparent; }
   #hud header{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
   .title{ font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
   #drawer{ display:grid; gap:12px; margin-top:12px; }
@@ -138,6 +148,36 @@
   }
   input[type=range]::-moz-range-track{ height:4px; border-radius:999px; background:rgba(238,241,246,.16); }
   input[type=range]::-moz-range-thumb{ width:14px; height:14px; border:0; border-radius:50%; background:var(--brand); }
+
+  /* Segmented input-mode switch: Mouse | AI Hands | Mic */
+  .seg{
+    display:grid; grid-template-columns:repeat(3, 1fr); gap:4px;
+    padding:4px; border:1px solid var(--line); border-radius:12px;
+    background:rgba(255,255,255,.03);
+  }
+  .seg button{
+    appearance:none; border:0; background:transparent; color:var(--muted);
+    border-radius:8px; padding:8px 4px; font-size:11px; font-weight:600;
+    letter-spacing:.04em; transition:background .18s ease, color .18s ease;
+  }
+  .seg button:hover{ color:var(--ink); background:rgba(255,255,255,.06); }
+  .seg button[aria-pressed="true"]{
+    background:var(--brand); color:#04121a;
+    box-shadow:0 6px 18px rgba(34,211,238,.28);
+  }
+
+  /* Model loading chip */
+  .loading{
+    display:none; align-items:center; gap:8px; font-size:11px; color:var(--muted);
+    font-family:ui-monospace, monospace;
+  }
+  .loading.show{ display:flex; }
+  .spin{
+    width:11px; height:11px; flex:none; border-radius:50%;
+    border:2px solid rgba(238,241,246,.2); border-top-color:var(--brand);
+    animation:spin .8s linear infinite;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
 
   .toggles{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }
   .toggles .btn{ padding:9px 8px; font-size:12px; }
@@ -188,19 +228,20 @@
   <div class="card glass" role="dialog" aria-modal="true" aria-labelledby="ttl">
     <p class="eyebrow">Hack the Arts · Generative Instrument</p>
     <h1 id="ttl">Synesthetic Canvas</h1>
-    <p>Paint with motion, sound and light. Your gestures drive a 20,000-particle curl-noise field — and the canvas answers back with its own generative pentatonic score.</p>
+    <p>Sculpt light with your bare hands. On-device AI tracks your hand and face landmarks in real time to bend a 20,000-particle curl-noise field — and the canvas answers back with its own generative pentatonic score.</p>
 
     <div class="modes">
-      <div class="mode"><span class="dot"></span><span><b>Mouse / Touch</b> — velocity becomes turbulence &amp; attraction</span></div>
-      <div class="mode"><span class="dot"></span><span><b>Microphone</b> — bass pulses, mids steer, treble shimmers</span></div>
-      <div class="mode"><span class="dot warm"></span><span><b>Webcam</b> — frame-difference motion ignites the field</span></div>
+      <div class="mode"><span class="dot"></span><span><b>Pinch</b> — index + thumb become a gravitational attractor orb</span></div>
+      <div class="mode"><span class="dot"></span><span><b>Open palm</b> — hand span expands turbulence and flow scale</span></div>
+      <div class="mode"><span class="dot"></span><span><b>Two hands</b> — an electric arc bridges your index tips into harmony</span></div>
+      <div class="mode"><span class="dot warm"></span><span><b>Open mouth / head tilt</b> — shockwave bursts and flow rotation</span></div>
     </div>
 
-    <button id="startBtn" class="btn primary block" type="button">Click to Start Experience</button>
+    <button id="startBtn" class="btn primary block" type="button">Start with AI Hand Tracking</button>
     <div class="row" style="margin-top:10px">
-      <button id="startSilentBtn" class="btn ghost block" type="button">Continue without mic &amp; camera</button>
+      <button id="startSilentBtn" class="btn ghost block" type="button">Continue in mouse mode</button>
     </div>
-    <p class="hint">Permissions are optional — denied devices fall back to a synthetic internal beat. Headphones recommended.</p>
+    <p class="hint">All AI inference runs locally in your browser — nothing is uploaded. If the camera or model is unavailable, control falls back to your cursor automatically.</p>
   </div>
 </div>
 
@@ -214,6 +255,16 @@
   </header>
 
   <div id="drawer">
+    <div class="field">
+      <label id="modeLbl">Input Mode</label>
+      <div class="seg" role="group" aria-labelledby="modeLbl">
+        <button id="modeMouse" type="button" aria-pressed="true">Mouse</button>
+        <button id="modeHand"  type="button" aria-pressed="false">AI Hands</button>
+        <button id="modeMic"   type="button" aria-pressed="false">Mic Audio</button>
+      </div>
+      <div id="loading" class="loading"><span class="spin"></span><span id="loadingTxt">loading vision model…</span></div>
+    </div>
+
     <div class="field">
       <label for="preset">Aesthetic Preset</label>
       <select id="preset">
@@ -245,8 +296,12 @@
     <div class="toggles">
       <button id="micBtn"  class="btn" type="button" aria-pressed="false">Mic Input</button>
       <button id="camBtn"  class="btn" type="button" aria-pressed="false">Webcam Motion</button>
+      <button id="handBtn" class="btn" type="button" aria-pressed="false">Hand Pose AI</button>
+      <button id="faceBtn" class="btn" type="button" aria-pressed="false">Face Mesh AI</button>
       <button id="sndBtn"  class="btn" type="button" aria-pressed="true">Gen. Sound</button>
+      <button id="skelBtn" class="btn" type="button" aria-pressed="true">Skeleton</button>
       <button id="flowBtn" class="btn" type="button" aria-pressed="false">Show Flow</button>
+      <button id="fsBtn"   class="btn" type="button">Fullscreen</button>
     </div>
 
     <div class="meters" aria-hidden="true">
@@ -254,13 +309,16 @@
       <div class="meter"><span>MID</span><div class="bar"><i id="mMid"></i></div></div>
       <div class="meter"><span>TREB</span><div class="bar"><i id="mTreb"></i></div></div>
       <div class="meter"><span>MOTION</span><div class="bar warm"><i id="mMotion"></i></div></div>
+      <div class="meter"><span>PINCH</span><div class="bar"><i id="mPinch"></i></div></div>
+      <div class="meter"><span>SPAN</span><div class="bar"><i id="mSpan"></i></div></div>
+      <div class="meter"><span>MOUTH</span><div class="bar warm"><i id="mMouth"></i></div></div>
     </div>
 
     <div class="sep"></div>
 
     <div class="actions">
-      <button id="shotBtn" class="btn" type="button">Capture PNG</button>
-      <button id="fsBtn"   class="btn" type="button">Fullscreen</button>
+      <button id="shotBtn"  class="btn" type="button">Capture PNG</button>
+      <button id="burstBtn" class="btn" type="button">Shockwave</button>
     </div>
   </div>
 </section>
@@ -273,7 +331,9 @@
   <span class="pill" id="pMic">mic idle</span>
   <span class="pill" id="pCam">cam idle</span>
   <span class="pill" id="pSnd">audio idle</span>
-  <span id="hintTxt">drag to paint · <b>H</b> hide ui · <b>1–5</b> presets · <b>S</b> save</span>
+  <span class="pill" id="pAI">ai idle</span>
+  <span class="pill" id="pHands">0 hands</span>
+  <span id="hintTxt">pinch to sculpt · <b>H</b> hide ui · <b>1–5</b> presets · <b>S</b> save · <b>A</b> ai hands</span>
 </div>
 
 <div id="toast" class="glass" role="status" aria-live="polite"></div>
@@ -285,12 +345,22 @@
    Architecture
      1. PRESETS ............ palette + physics personality
      2. AudioEngine ........ mic FFT analysis (Web Audio AnalyserNode)
-     3. Synth .............. generative pentatonic voice + reverb
-     4. MotionEngine ....... webcam frame differencing
-     5. ParticleField ...... curl/Perlin noise particle physics
-     6. p5 lifecycle ....... setup / draw / resize / input
-     7. UI ................. HUD wiring, hotkeys, toasts
-   All heavy allocation happens once; draw() reuses flat arrays.
+     3. Synth .............. generative pentatonic voice + reverb + chords
+     4. Camera ............. single shared getUserMedia video source
+     5. MotionEngine ....... webcam frame differencing (coarse motion)
+     6. VisionEngine ....... ml5.js handPose + faceMesh (client-side AI)
+     7. ParticleField ...... curl/Perlin noise particle physics
+     8. p5 lifecycle ....... setup / draw / resize / input
+     9. Overlays ........... hand skeleton, pinch orbs, energy arc
+    10. UI ................. HUD wiring, hotkeys, toasts
+
+   Zero-allocation policy
+     · All particle storage is flat Float32Array (SoA).
+     · Vision results are copied into PRE-ALLOCATED structs inside the async
+       ml5 callback. draw() only ever reads those structs — it never creates
+       arrays, objects, or vectors, so there are no GC pauses.
+     · AI inference runs in ml5's own decoupled detectStart loop, so model
+       latency can never stall the 60fps WebGL render loop.
    ================================================================== */
 
 'use strict';
@@ -318,13 +388,24 @@ const state = {
   micSensitivity: 1.0,
   micOn: false,
   camOn: false,
+  handOn: false,        // ml5.handPose active
+  faceOn: false,        // ml5.faceMesh active
   soundOn: true,
   showFlow: false,
+  showSkeleton: true,
   uiVisible: true,
+  mode: 'mouse',        // 'mouse' | 'hand' | 'mic' — primary driver
 };
 
 /* Live analysis values consumed by the physics each frame */
-const signal = { bass:0, mid:0, treble:0, motion:0, mx:0, my:0, energy:0, pulse:0 };
+const signal = {
+  bass:0, mid:0, treble:0, motion:0, mx:0, my:0, energy:0, pulse:0,
+  pinch:0,      // strongest pinch strength this frame  (0..1)
+  span:0,       // smoothed open-palm span               (0..1)
+  mouth:0,      // smoothed mouth openness               (0..1)
+  tilt:0,       // smoothed head tilt in radians
+  burst:0,      // decaying radial blast amplitude
+};
 
 /* ---------------- 2. AUDIO ENGINE (mic FFT) ------------------- */
 const AudioEngine = {
@@ -481,6 +562,52 @@ const Synth = {
     o.start(t); o.stop(t + 0.45);
   },
 
+  /* Mouth-open shockwave chord: three stacked pentatonic degrees. */
+  chord(nx, vel){
+    if(!this.ready || !state.soundOn) return;
+    // Offsets pick a rootless pentatonic triad — always consonant.
+    this.note(nx, 0.25, vel);
+    this.note(Math.min(0.999, nx + 2 / SCALE.length), 0.4, vel * 0.8);
+    this.note(Math.min(0.999, nx + 4 / SCALE.length), 0.55, vel * 0.65);
+    this.kick(vel * 0.7);
+  },
+
+  /* Dual-hand energy arc: a sustained two-note interval that tracks the
+     hands. Re-uses one voice pair; retriggered, never stacked. */
+  arcVoice:null,
+  arc(nxA, nxB, amt){
+    if(!this.ready || !state.soundOn) return;
+    const ctx = AudioEngine.ctx, t = ctx.currentTime;
+
+    if(!this.arcVoice){
+      const g = ctx.createGain(); g.gain.value = 0.0001;
+      const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 1.4;
+      const a = ctx.createOscillator(); a.type = 'sawtooth';
+      const b = ctx.createOscillator(); b.type = 'triangle';
+      const ag = ctx.createGain(); ag.gain.value = 0.22;
+      const bg = ctx.createGain(); bg.gain.value = 0.5;
+      a.connect(ag); ag.connect(f);
+      b.connect(bg); bg.connect(f);
+      f.connect(g); g.connect(this.master);
+      a.start(t); b.start(t);
+      this.arcVoice = { g, f, a, b };
+    }
+
+    const v = this.arcVoice;
+    const iA = Math.min(SCALE.length - 1, Math.floor(nxA * SCALE.length));
+    const iB = Math.min(SCALE.length - 1, Math.floor(nxB * SCALE.length));
+    v.a.frequency.setTargetAtTime(SCALE[iA], t, 0.08);
+    v.b.frequency.setTargetAtTime(SCALE[iB] * 2, t, 0.08);
+    v.f.frequency.setTargetAtTime(500 + amt * 3200, t, 0.1);
+    v.g.gain.setTargetAtTime(0.0001 + amt * 0.085, t, 0.12);
+  },
+
+  /* Fade the arc out when a hand leaves the frame. */
+  arcOff(){
+    if(!this.arcVoice || !AudioEngine.ctx) return;
+    this.arcVoice.g.gain.setTargetAtTime(0.0001, AudioEngine.ctx.currentTime, 0.18);
+  },
+
   setMuted(muted){
     if(!this.ready) return;
     const ctx = AudioEngine.ctx;
@@ -489,55 +616,96 @@ const Synth = {
   }
 };
 
-/* ---------------- 4. WEBCAM MOTION ENGINE -------------------- */
-/* Downscaled frame differencing -> magnitude + centroid force. */
-const MotionEngine = {
-  capture:null, prev:null, ready:false, W:64, H:48,
-  cx:0, cy:0, mag:0,
+/* ---------------- 4. SHARED CAMERA ---------------------------- */
+/* ONE getUserMedia stream feeds both the motion differencer and the ml5
+   models. A plain <video> is used (not p5's createCapture) so that
+   element.width === element.videoWidth — that guarantees ml5 keypoints
+   arrive in a pixel space we can normalise deterministically. */
+const Camera = {
+  video:null, stream:null, ready:false, vw:640, vh:480, refs:0,
 
   async enable(){
+    if(this.ready){ this.refs++; return true; }
     try{
-      // Probe permission first so a denial never leaves a dead <video>.
-      const probe = await navigator.mediaDevices.getUserMedia({ video:{ width:320, height:240 } });
-      probe.getTracks().forEach(t=>t.stop());
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        video:{ width:{ ideal:640 }, height:{ ideal:480 }, facingMode:'user' }, audio:false
+      });
 
-      this.capture = createCapture(VIDEO, ()=>{});
-      this.capture.size(this.W, this.H);
-      this.capture.hide();
-      this.prev = null;
-      this.ready = true;
+      const v = document.createElement('video');
+      v.setAttribute('playsinline', '');
+      v.muted = true; v.autoplay = true;
+      // Kept in the DOM (browsers throttle detached video) but visually hidden.
+      v.style.cssText = 'position:fixed;width:2px;height:2px;opacity:0;pointer-events:none;left:-9999px;top:0';
+      v.srcObject = this.stream;
+      document.body.appendChild(v);
+
+      await new Promise(res=>{
+        if(v.readyState >= 2) return res();
+        v.onloadedmetadata = ()=> res();
+        setTimeout(res, 2500);                 // never hang the UI
+      });
+      await v.play().catch(()=>{});
+
+      this.vw = v.videoWidth  || 640;
+      this.vh = v.videoHeight || 480;
+      v.width = this.vw; v.height = this.vh;   // align DOM dims with intrinsic
+      this.video = v;
+      this.ready = true; this.refs++;
       return true;
     }catch(err){
-      console.log('[v0] webcam denied/unavailable:', err && err.name);
+      console.log('[v0] camera denied/unavailable:', err && err.name);
       this.ready = false;
       return false;
     }
   },
 
-  disable(){
-    if(this.capture){
-      const el = this.capture.elt;
-      if(el && el.srcObject) el.srcObject.getTracks().forEach(t=>t.stop());
-      this.capture.remove();
-      this.capture = null;
+  /* Reference counted: motion + handPose + faceMesh can share one stream. */
+  release(){
+    this.refs = Math.max(0, this.refs - 1);
+    if(this.refs > 0) return;
+    if(this.stream) this.stream.getTracks().forEach(t=>t.stop());
+    if(this.video && this.video.parentNode) this.video.parentNode.removeChild(this.video);
+    this.stream = null; this.video = null; this.ready = false;
+  }
+};
+
+/* ---------------- 5. WEBCAM MOTION ENGINE -------------------- */
+/* Downscaled frame differencing -> magnitude + centroid force. */
+const MotionEngine = {
+  ready:false, W:64, H:48, cv:null, ctx:null, prev:null, tick:0,
+  cx:0.5, cy:0.5, mag:0,
+
+  async enable(){
+    const ok = await Camera.enable();
+    if(!ok){ this.ready = false; return false; }
+    if(!this.cv){
+      this.cv = document.createElement('canvas');
+      this.cv.width = this.W; this.cv.height = this.H;
+      this.ctx = this.cv.getContext('2d', { willReadFrequently:true });
+      this.prev = new Uint8ClampedArray(this.W * this.H * 4);
     }
-    this.prev = null; this.ready = false; this.mag = 0;
+    this.prev.fill(0);
+    this.ready = true;
+    return true;
+  },
+
+  disable(){
+    if(this.ready) Camera.release();
+    this.ready = false; this.mag = 0;
   },
 
   update(){
-    if(!this.ready || !this.capture) return;
-    this.capture.loadPixels();
-    const px = this.capture.pixels;
-    if(!px || px.length < 4) return;
+    if(!this.ready || !Camera.ready || !Camera.video) return;
+    // Every 3rd frame: differencing is a low-frequency signal, and this keeps
+    // the getImageData readback off the critical path.
+    if((this.tick++ % 3) !== 0) return;
 
-    if(!this.prev || this.prev.length !== px.length){
-      this.prev = new Uint8ClampedArray(px);
-      return;
-    }
+    const W = this.W, H = this.H;
+    this.ctx.drawImage(Camera.video, 0, 0, W, H);
+    const px = this.ctx.getImageData(0, 0, W, H).data;
+    const prev = this.prev;
 
     let total = 0, sx = 0, sy = 0, hits = 0;
-    const W = this.W, H = this.H, prev = this.prev;
-    // Sample every 2nd pixel on both axes for speed (~768 samples).
     for(let y = 0; y < H; y += 2){
       for(let x = 0; x < W; x += 2){
         const i = (y * W + x) * 4;
@@ -547,19 +715,245 @@ const MotionEngine = {
     }
     prev.set(px);
 
-    const raw = Math.min(1, total / 30000);
+    const raw = Math.min(1, total / 22000);
     this.mag = this.mag * 0.82 + raw * 0.18;            // temporal smoothing
     if(hits > 4){
       // Mirror X so movement feels like a mirror, not a camera.
       const nx = 1 - (sx / hits) / W;
       const ny = (sy / hits) / H;
-      this.cx = lerp(this.cx, nx, 0.16);
-      this.cy = lerp(this.cy, ny, 0.16);
+      this.cx += (nx - this.cx) * 0.16;
+      this.cy += (ny - this.cy) * 0.16;
     }
   }
 };
 
-/* ---------------- 5. PARTICLE FIELD -------------------------- */
+/* ---------------- 6. VISION ENGINE (ml5.js, client-side AI) --- */
+/*  handPose  : 21 landmarks × up to 2 hands  (MediaPipe Hands)
+    faceMesh  : 468 landmarks × 1 face        (MediaPipe FaceMesh)
+
+    Both run through ml5's own detectStart() loop, which is DECOUPLED from
+    p5's draw(): inference resolves in a callback whenever the model is
+    ready, so a slow frame of inference can never block rendering.
+
+    Every callback writes into pre-allocated slots below — no allocation,
+    therefore no GC spikes.                                              */
+
+const HAND_KP = 21;
+const PINCH_NORM = 0.058;   // pinch closes when tip gap < ~5.8% of frame width
+                            // (≈30px on a 512-wide feed, per the spec)
+
+/* MediaPipe hand skeleton: bone list as flat index pairs (allocated once). */
+const HAND_BONES = new Int8Array([
+  0,1, 1,2, 2,3, 3,4,          // thumb
+  0,5, 5,6, 6,7, 7,8,          // index
+  5,9, 9,10, 10,11, 11,12,     // middle
+  9,13, 13,14, 14,15, 15,16,   // ring
+  13,17, 17,18, 18,19, 19,20,  // pinky
+  0,17                         // palm base
+]);
+
+function makeHandSlot(){
+  return {
+    active:false, stale:0,
+    nx:new Float32Array(HAND_KP), ny:new Float32Array(HAND_KP), // normalised 0..1
+    pinch:0, pinchX:0.5, pinchY:0.5,     // pinch strength + attractor point
+    span:0,                              // wrist -> middle tip distance
+    ix:0.5, iy:0.5,                      // index fingertip (arc endpoint)
+    cx:0.5, cy:0.5,                      // palm centre
+  };
+}
+
+const vision = {
+  hands:[ makeHandSlot(), makeHandSlot() ],
+  handCount:0,
+  face:{ active:false, stale:0, mouth:0, tilt:0, cx:0.5, cy:0.5, eye:0.1 },
+  arcAmt:0,
+};
+
+const VisionEngine = {
+  handPose:null, faceMesh:null,
+  handRunning:false, faceRunning:false,
+  loadingHands:false, loadingFace:false,
+
+  available(){ return typeof ml5 !== 'undefined' && !!ml5.handPose; },
+
+  /* ---- hand tracking ---------------------------------------- */
+  async enableHands(){
+    if(!this.available()){ UI.toast('AI vision library failed to load · mouse mode'); return false; }
+    const cam = await Camera.enable();
+    if(!cam){ UI.toast('Camera unavailable · falling back to mouse mode'); return false; }
+
+    try{
+      if(!this.handPose){
+        this.loadingHands = true; UI.loading(true, 'loading hand model…');
+        // flipped:false — we mirror manually so motion + vision agree.
+        this.handPose = await this._load(()=> ml5.handPose({ maxHands:2, flipped:false }));
+        this.loadingHands = false; UI.loading(false);
+      }
+      this.handPose.detectStart(Camera.video, gotHands);
+      this.handRunning = true;
+      return true;
+    }catch(err){
+      console.log('[v0] handPose failed:', err && (err.message || err.name));
+      this.loadingHands = false; UI.loading(false);
+      Camera.release();
+      UI.toast('Hand model failed to load · mouse mode active');
+      return false;
+    }
+  },
+
+  disableHands(){
+    if(this.handPose && this.handRunning){
+      try{ this.handPose.detectStop(); }catch(e){}
+      Camera.release();
+    }
+    this.handRunning = false;
+    vision.handCount = 0;
+    vision.hands[0].active = vision.hands[1].active = false;
+    vision.arcAmt = 0;
+    Synth.arcOff();
+  },
+
+  /* ---- face tracking ---------------------------------------- */
+  async enableFace(){
+    if(!this.available() || !ml5.faceMesh){ UI.toast('Face model unavailable'); return false; }
+    const cam = await Camera.enable();
+    if(!cam){ UI.toast('Camera unavailable'); return false; }
+
+    try{
+      if(!this.faceMesh){
+        this.loadingFace = true; UI.loading(true, 'loading face model…');
+        this.faceMesh = await this._load(()=> ml5.faceMesh({ maxFaces:1, refineLandmarks:false, flipped:false }));
+        this.loadingFace = false; UI.loading(false);
+      }
+      this.faceMesh.detectStart(Camera.video, gotFaces);
+      this.faceRunning = true;
+      return true;
+    }catch(err){
+      console.log('[v0] faceMesh failed:', err && (err.message || err.name));
+      this.loadingFace = false; UI.loading(false);
+      Camera.release();
+      UI.toast('Face model failed to load');
+      return false;
+    }
+  },
+
+  disableFace(){
+    if(this.faceMesh && this.faceRunning){
+      try{ this.faceMesh.detectStop(); }catch(e){}
+      Camera.release();
+    }
+    this.faceRunning = false;
+    vision.face.active = false;
+    signal.mouth = 0; signal.tilt = 0;
+  },
+
+  /* ml5 v1 resolves models via callback OR promise depending on build, and
+     can hang on a bad network. This normalises both and adds a timeout. */
+  _load(factory){
+    return new Promise((resolve, reject)=>{
+      let settled = false;
+      const done = m => { if(!settled){ settled = true; resolve(m); } };
+      const timer = setTimeout(()=>{ if(!settled){ settled = true; reject(new Error('model load timeout')); } }, 20000);
+
+      let model;
+      try{
+        model = factory();
+      }catch(err){ clearTimeout(timer); return reject(err); }
+
+      // ml5 v1 exposes a `ready` promise on the model instance.
+      const ready = model && model.ready;
+      if(ready && typeof ready.then === 'function'){
+        ready.then(()=>{ clearTimeout(timer); done(model); }).catch(err=>{ clearTimeout(timer); reject(err); });
+      }else{
+        clearTimeout(timer); done(model);
+      }
+    });
+  },
+
+  /* Drop tracking data that has gone stale (hand left the frame). */
+  decay(){
+    for(let h = 0; h < 2; h++){
+      const s = vision.hands[h];
+      if(s.active && ++s.stale > 12){ s.active = false; s.pinch = 0; }
+    }
+    let n = 0;
+    if(vision.hands[0].active) n++;
+    if(vision.hands[1].active) n++;
+    vision.handCount = n;
+
+    const f = vision.face;
+    if(f.active && ++f.stale > 20){ f.active = false; f.mouth = 0; }
+  }
+};
+
+/* ---- ml5 CALLBACKS (async, off the render loop) -------------- */
+/* Writes into pre-allocated slots only. */
+function gotHands(results){
+  if(!results) return;
+  const vw = Camera.vw || 640, vh = Camera.vh || 480;
+
+  for(let h = 0; h < 2; h++){
+    const slot = vision.hands[h];
+    const hand = results[h];
+
+    if(!hand || !hand.keypoints || hand.keypoints.length < HAND_KP){
+      continue;                        // let decay() retire it gracefully
+    }
+
+    const kp = hand.keypoints;
+    for(let i = 0; i < HAND_KP; i++){
+      // Mirror X: the canvas should behave like a mirror, not a camera.
+      slot.nx[i] = 1 - (kp[i].x / vw);
+      slot.ny[i] = kp[i].y / vh;
+    }
+
+    // Pinch = index tip (8) to thumb tip (4)
+    const dx = slot.nx[8] - slot.nx[4];
+    const dy = slot.ny[8] - slot.ny[4];
+    const gap = Math.sqrt(dx*dx + dy*dy);
+    const raw = gap < PINCH_NORM ? (1 - gap / PINCH_NORM) : 0;
+    slot.pinch = slot.pinch * 0.55 + raw * 0.45;        // smooth the flicker
+    slot.pinchX = (slot.nx[8] + slot.nx[4]) * 0.5;
+    slot.pinchY = (slot.ny[8] + slot.ny[4]) * 0.5;
+
+    // Open-palm span = wrist (0) to middle fingertip (12)
+    const sx = slot.nx[12] - slot.nx[0], sy = slot.ny[12] - slot.ny[0];
+    const rawSpan = Math.min(1, Math.max(0, (Math.sqrt(sx*sx + sy*sy) - 0.18) / 0.34));
+    slot.span = slot.span * 0.7 + rawSpan * 0.3;
+
+    slot.ix = slot.nx[8]; slot.iy = slot.ny[8];
+    slot.cx = (slot.nx[0] + slot.nx[9]) * 0.5;
+    slot.cy = (slot.ny[0] + slot.ny[9]) * 0.5;
+    slot.active = true; slot.stale = 0;
+  }
+}
+
+function gotFaces(results){
+  if(!results || !results[0] || !results[0].keypoints) return;
+  const kp = results[0].keypoints;
+  if(kp.length < 264) return;
+  const vw = Camera.vw || 640, vh = Camera.vh || 480;
+  const f = vision.face;
+
+  // Eye corners 33 / 263 give a scale-invariant reference and the head roll.
+  const ex1 = 1 - kp[33].x / vw,  ey1 = kp[33].y / vh;
+  const ex2 = 1 - kp[263].x / vw, ey2 = kp[263].y / vh;
+  const eye = Math.max(0.02, Math.hypot(ex2 - ex1, ey2 - ey1));
+
+  // Inner lips 13 / 14 -> openness, normalised by eye distance.
+  const mo = Math.abs((kp[14].y - kp[13].y) / vh) / eye;
+  const openRaw = Math.min(1, Math.max(0, (mo - 0.08) / 0.55));
+
+  f.eye = eye;
+  f.mouth = f.mouth * 0.6 + openRaw * 0.4;
+  f.tilt  = f.tilt  * 0.75 + Math.atan2(ey2 - ey1, ex2 - ex1) * 0.25;
+  f.cx = 1 - kp[1].x / vw;
+  f.cy = kp[1].y / vh;
+  f.active = true; f.stale = 0;
+}
+
+/* ---------------- 7. PARTICLE FIELD -------------------------- */
 /* Flat typed arrays (SoA layout) — zero allocation inside draw(). */
 const MAX_PARTICLES = 20000;
 const P = {
@@ -581,6 +975,19 @@ for(let b = 0; b < BUCKETS; b++){
 }
 
 let shockwaves = [];  // {r, life} bass-triggered rings
+
+/* Gravitational attractors written by pinch gestures (and the cursor).
+   Fixed-size flat buffers: the physics loop reads these, and nothing here is
+   ever re-allocated between frames. */
+const ATT = {
+  n:0,
+  x:new Float32Array(3),   // canvas-space X
+  y:new Float32Array(3),   // canvas-space Y
+  k:new Float32Array(3),   // pull strength 0..1
+};
+
+/* Radial blast origin (face position when the mouth opens). */
+const BLAST = { x:0, y:0 };
 
 function preset(){ return PRESETS[state.presetIndex]; }
 
@@ -609,9 +1016,10 @@ function reHue(){
   }
 }
 
-/* ---------------- 6. p5 LIFECYCLE ---------------------------- */
+/* ---------------- 8. p5 LIFECYCLE ---------------------------- */
 let smoothX = 0, smoothY = 0, cursorVel = 0, pressed = false;
 let flowT = 0, lastKick = 0, fpsSmooth = 60;
+let flowRot = 0, lastChord = 0, lastArcNote = 0;
 
 function setup(){
   const c = createCanvas(windowWidth, windowHeight, WEBGL);
@@ -649,22 +1057,85 @@ function draw(){
   if(state.camOn) MotionEngine.update();
   signal.motion = state.camOn ? MotionEngine.mag : 0;
 
-  // Smoothed cursor + velocity (lerp removes pointer jitter).
+  /* --- AI VISION -> control signals --------------------------- */
+  VisionEngine.decay();
+  const halfWv = width / 2, halfHv = height / 2;
+  const handsLive = state.handOn && vision.handCount > 0;
+
+  ATT.n = 0;
+  let pinchMax = 0, spanMax = 0;
+
+  if(handsLive){
+    for(let h = 0; h < 2; h++){
+      const s = vision.hands[h];
+      if(!s.active) continue;
+      if(s.span > spanMax) spanMax = s.span;
+
+      // PINCH -> gravitational attractor / particle magnet
+      if(s.pinch > 0.06 && ATT.n < 3){
+        const k = ATT.n++;
+        ATT.x[k] = (s.pinchX - 0.5) * width;
+        ATT.y[k] = (s.pinchY - 0.5) * height;
+        ATT.k[k] = s.pinch;
+        if(s.pinch > pinchMax) pinchMax = s.pinch;
+      }
+    }
+  }
+
+  // Mouse/touch acts as an attractor too — the always-available fallback.
   smoothX = lerp(smoothX, mouseX - width/2,  0.16);
   smoothY = lerp(smoothY, mouseY - height/2, 0.16);
   cursorVel = lerp(cursorVel, constrain(dist(mouseX, mouseY, pmouseX, pmouseY) / 22, 0, 1), 0.2);
 
+  if(!handsLive && ATT.n < 3){
+    const k = ATT.n++;
+    ATT.x[k] = smoothX; ATT.y[k] = smoothY;
+    ATT.k[k] = (pressed ? 1 : 0.28) * (0.35 + cursorVel * 1.6);
+  }
+
+  signal.pinch = lerp(signal.pinch, pinchMax, 0.3);
+  signal.span  = lerp(signal.span,  handsLive ? spanMax : 0, 0.12);
+
+  // DUAL-HAND ENERGY ARC: both index tips bridged by an electric line.
+  const bothHands = handsLive && vision.hands[0].active && vision.hands[1].active;
+  vision.arcAmt = lerp(vision.arcAmt, bothHands ? 1 : 0, bothHands ? 0.18 : 0.1);
+
+  // FACE: mouth openness -> radial shockwave burst + chord; tilt -> flow spin.
+  if(state.faceOn && vision.face.active){
+    const f = vision.face;
+    signal.mouth = f.mouth;
+    signal.tilt  = f.tilt;
+    if(f.mouth > 0.5 && millis() - lastChord > 620){
+      lastChord = millis();
+      signal.burst = 1;
+      BLAST.x = (f.cx - 0.5) * width;
+      BLAST.y = (f.cy - 0.5) * height;
+      shockwaves.push({ r: 26, life: 1 });
+      if(state.soundOn) Synth.chord(constrain(f.cx, 0, 0.999), 0.5 + f.mouth * 0.5);
+    }
+  }else{
+    signal.mouth = lerp(signal.mouth, 0, 0.2);
+    signal.tilt  = lerp(signal.tilt,  0, 0.1);
+  }
+  signal.burst *= 0.93;                       // exponential blast decay
+  // Head roll rotates the entire flow-field direction.
+  flowRot = lerp(flowRot, signal.tilt * 2.2, 0.06);
+
   // FALLBACK MODE: with no mic and no camera, an internal pulse keeps the
   // canvas alive so it is never static or blank.
   let synthetic = 0;
-  if(!state.micOn && !state.camOn){
+  if(!state.micOn && !state.camOn && !state.handOn && !state.faceOn){
     synthetic = pow(0.5 + 0.5 * sin(millis() * 0.0016), 3);
     signal.bass = max(signal.bass, synthetic * 0.55);
     signal.mid  = max(signal.mid,  0.12 + synthetic * 0.2);
     if(state.soundOn && millis() - lastKick > 1900){ lastKick = millis(); Synth.kick(0.4); }
   }
 
-  signal.energy = constrain(cursorVel * 0.9 + signal.mid * 0.8 + signal.motion * 1.1 + (pressed ? 0.35 : 0), 0, 1.6);
+  signal.energy = constrain(
+    cursorVel * 0.9 + signal.mid * 0.8 + signal.motion * 1.1 + (pressed ? 0.35 : 0) +
+    signal.pinch * 0.7 + signal.span * 0.45 + signal.mouth * 0.6 + vision.arcAmt * 0.35,
+    0, 1.6
+  );
 
   // Bass transient -> shockwave ring
   signal.pulse = lerp(signal.pulse, signal.bass, 0.4);
@@ -683,11 +1154,16 @@ function draw(){
 
   /* --- 6c. physics + bucket fill ------------------------------ */
   const n = state.particleCount;
-  const ns = p.noiseScale * (1 + signal.treble * 0.45);
-  flowT += p.flowSpeed * (0.6 + signal.mid * 2.4 + cursorVel * 1.2);
-  const turb = p.turbulence * (0.65 + signal.mid * 1.5 + cursorVel * 1.1);
+  // OPEN PALM SPAN expands the flow scale (wider noise cells) and turbulence.
+  const spanK = 1 + signal.span * 1.1;
+  const ns = p.noiseScale * (1 + signal.treble * 0.45) / spanK;
+  flowT += p.flowSpeed * (0.6 + signal.mid * 2.4 + cursorVel * 1.2 + signal.span * 1.6);
+  const turb = p.turbulence * (0.65 + signal.mid * 1.5 + cursorVel * 1.1 + signal.span * 1.4);
   const damp = p.damping - signal.bass * 0.02;
   const halfW = width / 2, halfH = height / 2;
+  const rot = flowRot;                    // head-tilt flow rotation (radians)
+  const attN = ATT.n, attX = ATT.x, attY = ATT.y, attK = ATT.k;
+  const blast = signal.burst;
 
   // Motion centroid mapped into canvas space (acts as a repulsor / igniter).
   const mcx = (MotionEngine.cx - 0.5) * width;
@@ -697,15 +1173,26 @@ function draw(){
 
   for(let i = 0; i < n; i++){
     // --- flow field force (Perlin noise curl approximation)
-    const a = noise(P.x[i] * ns + 1000, P.y[i] * ns + 1000, flowT) * TWO_PI * 2.4;
+    //     `rot` is the head-tilt offset: tilting spins the whole stream.
+    const a = noise(P.x[i] * ns + 1000, P.y[i] * ns + 1000, flowT) * TWO_PI * 2.4 + rot;
     let fx = cos(a) * 0.14 * turb;
     let fy = sin(a) * 0.14 * turb;
 
-    // --- cursor attraction, strength scales with gesture velocity
-    const dxc = smoothX - P.x[i], dyc = smoothY - P.y[i];
-    const d2  = dxc*dxc + dyc*dyc + 900;
-    const pull = (pressed ? 240 : 70) * (0.35 + cursorVel * 1.6) / d2;
-    fx += dxc * pull; fy += dyc * pull;
+    // --- attractors: pinched fingertips (AI) and/or the cursor (fallback)
+    for(let k = 0; k < attN; k++){
+      const dxc = attX[k] - P.x[i], dyc = attY[k] - P.y[i];
+      const d2  = dxc*dxc + dyc*dyc + 900;
+      const pull = 300 * attK[k] / d2;
+      fx += dxc * pull; fy += dyc * pull;
+    }
+
+    // --- mouth-open blast: radial push away from the face
+    if(blast > 0.02){
+      const dxb = P.x[i] - BLAST.x, dyb = P.y[i] - BLAST.y;
+      const db = Math.sqrt(dxb*dxb + dyb*dyb) + 24;
+      const kb = blast * 900 / db;
+      fx += (dxb / db) * kb * 0.05; fy += (dyb / db) * kb * 0.05;
+    }
 
     // --- webcam motion centroid pushes particles outward
     if(signal.motion > 0.02){
@@ -731,9 +1218,10 @@ function draw(){
     // --- lifetime + boundary respawn
     P.life[i] += 1 + signal.treble * 2.2;
     if(P.life[i] > P.max[i] || P.x[i] < -halfW || P.x[i] > halfW || P.y[i] < -halfH || P.y[i] > halfH){
-      // Fast gestures re-seed near the cursor: painting feels direct.
-      if(cursorVel > 0.12 && random() < 0.55) spawn(i, smoothX + random(-60,60), smoothY + random(-60,60));
-      else spawn(i);
+      // Active gestures re-seed near the attractor: sculpting feels direct.
+      if(attN > 0 && (signal.pinch > 0.2 || cursorVel > 0.12) && random() < 0.6){
+        spawn(i, attX[0] + random(-60,60), attY[0] + random(-60,60));
+      }else spawn(i);
       P.life[i] = 0;
     }
 
@@ -779,6 +1267,9 @@ function draw(){
     circle(0, 0, sw.r * 2);
   }
 
+  /* --- 6e2. AI tracking overlays (skeleton, orbs, arc) -------- */
+  drawVisionOverlay();
+
   /* --- 6f. optional flow-field debug overlay ------------------ */
   if(state.showFlow){
     stroke(0, 0, 100, 10);
@@ -793,19 +1284,164 @@ function draw(){
 
   /* --- 6g. reverse synesthesia: canvas plays itself ----------- */
   if(state.soundOn && Synth.ready){
+    // Pinched fingertips take over as the note source when AI hands are live.
+    const srcX = attN > 0 ? attX[0] : smoothX;
+    const srcY = attN > 0 ? attY[0] : smoothY;
     const interval = map(signal.energy, 0, 1.6, 620, 110, true);
     if(millis() - Synth.lastNote > interval && (signal.energy > 0.07 || synthetic > 0.8)){
       Synth.lastNote = millis();
-      const nx = constrain((smoothX + halfW) / width, 0, 1);
-      const ny = constrain((smoothY + halfH) / height, 0, 1);
+      const nx = constrain((srcX + halfW) / width, 0, 1);
+      const ny = constrain((srcY + halfH) / height, 0, 1);
       Synth.note(nx, ny, constrain(signal.energy / 1.6, 0.05, 1));
       if(signal.bass > 0.6 && millis() - lastKick > 320){ lastKick = millis(); Synth.kick(signal.bass); }
+    }
+
+    // Dual-hand arc drives a sustained harmony between the two index tips.
+    if(vision.arcAmt > 0.02 && millis() - lastArcNote > 90){
+      lastArcNote = millis();
+      Synth.arc(
+        constrain(vision.hands[0].ix, 0, 0.999),
+        constrain(vision.hands[1].ix, 0, 0.999),
+        vision.arcAmt
+      );
+    }else if(vision.arcAmt <= 0.02 && Synth.arcVoice){
+      Synth.arcOff();
     }
   }
 
   /* --- 6h. HUD telemetry (throttled) ------------------------- */
   fpsSmooth = lerp(fpsSmooth, frameRate(), 0.08);
   if(frameCount % 6 === 0) UI.telemetry(fpsSmooth);
+}
+
+/* ---------------- 9. AI TRACKING OVERLAYS -------------------- */
+/* Translucent skeleton + glowing keypoints so the user can literally see the
+   model following their hands. Drawn additively on top of the field.
+   No allocation: all coordinates are derived inline from the vision slots. */
+function drawVisionOverlay(){
+  const p = preset();
+  const halfW = width / 2, halfH = height / 2;
+  const accent = p.hues[1], warm = p.hues[0];
+
+  /* --- pinch attractor orbs (drawn even without the skeleton) --- */
+  blendMode(ADD);
+  for(let h = 0; h < 2; h++){
+    const s = vision.hands[h];
+    if(!s.active || s.pinch < 0.06) continue;
+    const ox = (s.pinchX - 0.5) * width, oy = (s.pinchY - 0.5) * height;
+    const glow = s.pinch;
+
+    // Concentric halo. High saturation + low alpha keeps the additive stack
+    // from clipping to pure white — it stays a coloured energy orb.
+    noStroke();
+    for(let r = 4; r >= 0; r--){
+      const rad = 6 + r * 13 * glow;
+      fill(accent, 92 - r * 9, 100, (5.5 - r * 0.9) * glow);
+      circle(ox, oy, rad * 2);
+    }
+    // Rotating containment ring reads as "captured energy".
+    noFill();
+    stroke(accent, 62, 100, 26 * glow);
+    strokeWeight(1.2);
+    const wob = 1 + sin(frameCount * 0.08 + h) * 0.06;
+    circle(ox, oy, 66 * glow * wob);
+  }
+
+  if(!state.showSkeleton){ blendMode(BLEND); return; }
+
+  /* --- hand skeleton + keypoints ------------------------------- */
+  for(let h = 0; h < 2; h++){
+    const s = vision.hands[h];
+    if(!s.active) continue;
+    const hue = h === 0 ? accent : warm;
+
+    // Bones
+    stroke(hue, 40, 100, 26 + s.pinch * 34);
+    strokeWeight(1.6);
+    for(let b = 0; b < HAND_BONES.length; b += 2){
+      const a = HAND_BONES[b], c = HAND_BONES[b + 1];
+      line((s.nx[a] - 0.5) * width, (s.ny[a] - 0.5) * height,
+           (s.nx[c] - 0.5) * width, (s.ny[c] - 0.5) * height);
+    }
+
+    // Keypoints — fingertips are emphasised.
+    noStroke();
+    for(let i = 0; i < HAND_KP; i++){
+      const tip = (i === 4 || i === 8 || i === 12 || i === 16 || i === 20);
+      const d = tip ? 11 : 6;
+      fill(hue, tip ? 25 : 45, 100, tip ? 60 : 34);
+      circle((s.nx[i] - 0.5) * width, (s.ny[i] - 0.5) * height, d);
+    }
+
+    // Palm-span indicator: an arc that widens as the hand opens.
+    if(s.span > 0.05){
+      noFill();
+      stroke(hue, 35, 100, 18 + s.span * 26);
+      strokeWeight(1);
+      circle((s.cx - 0.5) * width, (s.cy - 0.5) * height, 60 + s.span * 190);
+    }
+  }
+
+  /* --- dual-hand electric energy arc --------------------------- */
+  if(vision.arcAmt > 0.02 && vision.hands[0].active && vision.hands[1].active){
+    const ax = (vision.hands[0].ix - 0.5) * width, ay = (vision.hands[0].iy - 0.5) * height;
+    const bx = (vision.hands[1].ix - 0.5) * width, by = (vision.hands[1].iy - 0.5) * height;
+    const amt = vision.arcAmt;
+    const dx = bx - ax, dy = by - ay;
+    const len = Math.sqrt(dx*dx + dy*dy) + 1;
+    const px2 = -dy / len, py2 = dx / len;          // perpendicular unit vector
+    const SEG = 22;
+    const jitter = 12 + amt * 26;
+
+    // Three passes: wide dim halo, mid bolt, hot core.
+    for(let pass = 0; pass < 3; pass++){
+      stroke(accent, 20 + pass * 18, 100, (10 + pass * 16) * amt);
+      strokeWeight((6 - pass * 2) * amt + 0.4);
+      noFill();
+      beginShape();
+      for(let i = 0; i <= SEG; i++){
+        const t = i / SEG;
+        // Envelope pins the bolt to both fingertips; noise animates the middle.
+        const env = sin(t * PI);
+        const nz = noise(i * 0.35 + pass * 9.1, frameCount * 0.09) - 0.5;
+        const off = nz * jitter * env * (pass === 2 ? 0.5 : 1);
+        vertex(ax + dx * t + px2 * off, ay + dy * t + py2 * off);
+      }
+      endShape();
+    }
+
+    // Node flares at both endpoints.
+    noStroke();
+    for(let k = 0; k < 2; k++){
+      const ex = k ? bx : ax, ey = k ? by : ay;
+      for(let r = 3; r >= 0; r--){
+        fill(accent, 40 - r * 8, 100, (14 - r * 3) * amt);
+        circle(ex, ey, (10 + r * 14) * 2);
+      }
+    }
+  }
+
+  /* --- face markers -------------------------------------------- */
+  if(state.faceOn && vision.face.active){
+    const f = vision.face;
+    const fx = (f.cx - 0.5) * width, fy = (f.cy - 0.5) * height;
+    const rr = max(40, f.eye * width * 1.9);
+    noFill();
+    stroke(warm, 35, 100, 14 + f.mouth * 40);
+    strokeWeight(1.2);
+    push();
+    translate(fx, fy);
+    rotate(f.tilt);                                 // ring follows head roll
+    ellipse(0, 0, rr * 1.5, rr * 2);
+    line(-rr * 0.75, 0, rr * 0.75, 0);
+    // Mouth openness as a vertical bar.
+    strokeWeight(2 + f.mouth * 4);
+    stroke(warm, 25, 100, 20 + f.mouth * 55);
+    line(0, rr * 0.35, 0, rr * (0.35 + f.mouth * 0.7));
+    pop();
+  }
+
+  blendMode(BLEND);
 }
 
 /* ---------------- INPUT ------------------------------------- */
@@ -821,9 +1457,13 @@ function keyPressed(){
   else if(k === 's'){ UI.capture(); }
   else if(k === 'f'){ UI.fullscreen(); }
   else if(k === 'm'){ UI.el.sndBtn.click(); }
+  else if(k === 'a'){ UI.el.handBtn.click(); }
+  else if(k === 'e'){ UI.el.faceBtn.click(); }
+  else if(k === 'k'){ UI.el.skelBtn.click(); }
+  else if(k === 'b'){ UI.burst(); }
 }
 
-/* ---------------- 7. UI LAYER -------------------------------- */
+/* ---------------- 10. UI LAYER ------------------------------- */
 const UI = {
   el:{},
 
@@ -835,11 +1475,20 @@ const UI = {
       preset:id('preset'), count:id('count'), countVal:id('countVal'),
       trail:id('trail'), trailVal:id('trailVal'), sens:id('sens'), sensVal:id('sensVal'),
       micBtn:id('micBtn'), camBtn:id('camBtn'), sndBtn:id('sndBtn'), flowBtn:id('flowBtn'),
-      shotBtn:id('shotBtn'), fsBtn:id('fsBtn'),
+      handBtn:id('handBtn'), faceBtn:id('faceBtn'), skelBtn:id('skelBtn'),
+      shotBtn:id('shotBtn'), fsBtn:id('fsBtn'), burstBtn:id('burstBtn'),
+      modeMouse:id('modeMouse'), modeHand:id('modeHand'), modeMic:id('modeMic'),
+      loading:id('loading'), loadingTxt:id('loadingTxt'),
       mBass:id('mBass'), mMid:id('mMid'), mTreb:id('mTreb'), mMotion:id('mMotion'),
+      mPinch:id('mPinch'), mSpan:id('mSpan'), mMouth:id('mMouth'),
       fps:id('fps'), pMic:id('pMic'), pCam:id('pCam'), pSnd:id('pSnd'),
+      pAI:id('pAI'), pHands:id('pHands'),
       status:id('status'), toast:id('toast'),
     };
+
+    this.el.modeMouse.addEventListener('click', ()=> this.setMode('mouse'));
+    this.el.modeHand.addEventListener('click',  ()=> this.setMode('hand'));
+    this.el.modeMic.addEventListener('click',   ()=> this.setMode('mic'));
 
     this.el.startBtn.addEventListener('click', ()=> this.start(true));
     this.el.startSilentBtn.addEventListener('click', ()=> this.start(false));
@@ -893,14 +1542,85 @@ const UI = {
       this.sync();
     });
 
+    this.el.handBtn.addEventListener('click', async ()=>{
+      if(state.handOn){
+        VisionEngine.disableHands(); state.handOn = false;
+        this.toast('Hand tracking off · mouse mode');
+        if(state.mode === 'hand') state.mode = 'mouse';
+      }else{
+        this.toast('Loading hand model…');
+        const ok = await VisionEngine.enableHands();
+        state.handOn = ok;
+        if(ok){ state.mode = 'hand'; this.toast('Hand AI live — pinch to sculpt'); }
+      }
+      this.sync();
+    });
+
+    this.el.faceBtn.addEventListener('click', async ()=>{
+      if(state.faceOn){
+        VisionEngine.disableFace(); state.faceOn = false;
+        this.toast('Face mesh off');
+      }else{
+        this.toast('Loading face model…');
+        const ok = await VisionEngine.enableFace();
+        state.faceOn = ok;
+        if(ok) this.toast('Face mesh live — open your mouth');
+      }
+      this.sync();
+    });
+
+    this.el.skelBtn.addEventListener('click', ()=>{
+      state.showSkeleton = !state.showSkeleton; this.sync();
+    });
+
     this.el.flowBtn.addEventListener('click', ()=>{
       state.showFlow = !state.showFlow; this.sync();
     });
 
     this.el.shotBtn.addEventListener('click', ()=> this.capture());
+    this.el.burstBtn.addEventListener('click', ()=> this.burst());
     this.el.fsBtn.addEventListener('click', ()=> this.fullscreen());
 
     this.sync();
+  },
+
+  /* Segmented input-mode switch. Mouse always remains as a safety net. */
+  async setMode(mode){
+    if(mode === 'hand'){
+      if(!state.handOn){
+        this.toast('Loading hand model…');
+        const ok = await VisionEngine.enableHands();
+        state.handOn = ok;
+        if(!ok){ state.mode = 'mouse'; this.sync(); return; }   // graceful fallback
+      }
+      state.mode = 'hand';
+      this.toast('AI hands — pinch to sculpt, spread to swell');
+    }else if(mode === 'mic'){
+      if(!state.micOn){
+        const ok = await AudioEngine.enableMic();
+        state.micOn = ok;
+        if(!ok){ state.mode = 'mouse'; this.toast('Mic unavailable · mouse mode'); this.sync(); return; }
+      }
+      state.mode = 'mic';
+      this.toast('Mic mode — bass pulses, mids steer');
+    }else{
+      state.mode = 'mouse';
+      this.toast('Mouse mode — drag to paint');
+    }
+    this.sync();
+  },
+
+  burst(){
+    signal.burst = 1;
+    BLAST.x = 0; BLAST.y = 0;
+    shockwaves.push({ r: 24, life: 1 });
+    if(state.soundOn) Synth.chord(0.4, 0.9);
+  },
+
+  loading(show, txt){
+    if(!this.el.loading) return;
+    if(txt) this.el.loadingTxt.textContent = txt;
+    this.el.loading.classList.toggle('show', !!show);
   },
 
   async start(withDevices){
@@ -911,10 +1631,20 @@ const UI = {
     if(withDevices){
       const mic = await AudioEngine.enableMic();
       state.micOn = mic;
-      const cam = await MotionEngine.enable();
-      state.camOn = cam;
-      if(!mic && !cam) this.toast('Devices unavailable — mouse/touch mode with synthetic beat');
-      else this.toast('Move, speak, and drag to paint');
+
+      // AI hand tracking is the headline input; motion differencing rides along.
+      const hands = await VisionEngine.enableHands();
+      state.handOn = hands;
+      if(hands){
+        state.mode = 'hand';
+        const cam = await MotionEngine.enable();
+        state.camOn = cam;
+        this.toast('Pinch your fingers to sculpt the field');
+      }else{
+        // Graceful degradation: camera or model unavailable -> cursor control.
+        state.mode = mic ? 'mic' : 'mouse';
+        this.toast(mic ? 'Vision unavailable · mic + mouse mode' : 'Vision unavailable · mouse mode');
+      }
     }else{
       this.toast('Mouse/touch mode — drag to paint');
     }
@@ -956,8 +1686,15 @@ const UI = {
     const set = (btn, on) => btn.setAttribute('aria-pressed', String(!!on));
     set(this.el.micBtn,  state.micOn);
     set(this.el.camBtn,  state.camOn);
+    set(this.el.handBtn, state.handOn);
+    set(this.el.faceBtn, state.faceOn);
     set(this.el.sndBtn,  state.soundOn);
+    set(this.el.skelBtn, state.showSkeleton);
     set(this.el.flowBtn, state.showFlow);
+
+    set(this.el.modeMouse, state.mode === 'mouse');
+    set(this.el.modeHand,  state.mode === 'hand');
+    set(this.el.modeMic,   state.mode === 'mic');
 
     const pill = (el, on, onTxt, offTxt) => {
       el.textContent = on ? onTxt : offTxt;
@@ -966,6 +1703,7 @@ const UI = {
     pill(this.el.pMic, state.micOn, 'mic live', 'mic off');
     pill(this.el.pCam, state.camOn, 'cam live', 'cam off');
     pill(this.el.pSnd, state.soundOn && Synth.ready, 'audio on', 'audio off');
+    pill(this.el.pAI,  state.handOn || state.faceOn, 'ai live', 'ai off');
   },
 
   telemetry(fps){
@@ -974,6 +1712,14 @@ const UI = {
     this.el.mMid.style.width    = (signal.mid    * 100).toFixed(0) + '%';
     this.el.mTreb.style.width   = (signal.treble * 100).toFixed(0) + '%';
     this.el.mMotion.style.width = (signal.motion * 100).toFixed(0) + '%';
+    this.el.mPinch.style.width  = (signal.pinch  * 100).toFixed(0) + '%';
+    this.el.mSpan.style.width   = (signal.span   * 100).toFixed(0) + '%';
+    this.el.mMouth.style.width  = (signal.mouth  * 100).toFixed(0) + '%';
+
+    const n = vision.handCount;
+    const el = this.el.pHands;
+    el.textContent = state.handOn ? (n + (n === 1 ? ' hand' : ' hands')) : 'no tracking';
+    el.className = 'pill ' + (n > 0 ? 'on' : 'off');
   },
 
   _t:null,
