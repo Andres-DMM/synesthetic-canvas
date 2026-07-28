@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Synesthetic Canvas — Interactive Generative Art</title>
+<meta name="description" content="Synesthetic Canvas: a real-time generative art instrument driven by touch, microphone and webcam motion." />
+<meta name="theme-color" content="#07070b" />
+
+<!-- p5.js (WebGL renderer + video capture). Audio uses the native Web Audio API. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+
+<style>
+  /* ============================================================
+     DESIGN TOKENS  (3 neutrals + 1 brand + 1 accent)
+     ============================================================ */
+  :root{
+    --bg:        #07070b;   /* neutral 1 — canvas void   */
+    --surface:   #14141c;   /* neutral 2 — panels        */
+    --ink:       #eef1f6;   /* neutral 3 — text          */
+    --muted:     rgba(238,241,246,.58);
+    --brand:     #22d3ee;   /* cyan  — primary           */
+    --accent:    #f97362;   /* coral — accent / warnings */
+    --line:      rgba(238,241,246,.12);
+    --radius:    14px;
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{
+    margin:0; padding:0; height:100%; width:100%;
+    background:var(--bg); color:var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+    overflow:hidden; overscroll-behavior:none; -webkit-tap-highlight-color:transparent;
+  }
+  canvas{ display:block; touch-action:none; }
+
+  /* ============================================================
+     GLASSMORPHISM PRIMITIVE
+     ============================================================ */
+  .glass{
+    background: color-mix(in srgb, var(--surface) 62%, transparent);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    backdrop-filter: blur(18px) saturate(140%);
+    border:1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: 0 18px 50px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06);
+  }
+
+  /* ============================================================
+     START OVERLAY  (unlocks AudioContext + device permissions)
+     ============================================================ */
+  #overlay{
+    position:fixed; inset:0; z-index:50;
+    display:flex; align-items:center; justify-content:center;
+    padding:24px;
+    background:
+      radial-gradient(1200px 600px at 50% 8%, rgba(34,211,238,.14), transparent 60%),
+      radial-gradient(900px 500px at 80% 100%, rgba(249,115,98,.10), transparent 60%),
+      var(--bg);
+    transition:opacity .6s ease, visibility .6s ease;
+  }
+  #overlay.hidden{ opacity:0; visibility:hidden; pointer-events:none; }
+
+  .card{ width:min(560px, 100%); padding:28px; text-align:left; }
+  .eyebrow{
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size:11px; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--brand); margin:0 0 14px;
+  }
+  h1{
+    margin:0 0 10px; font-size:clamp(30px, 6vw, 46px); line-height:1.05;
+    letter-spacing:-.02em; font-weight:650; text-wrap:balance;
+  }
+  .card p{ margin:0 0 20px; color:var(--muted); line-height:1.6; font-size:15px; text-wrap:pretty; }
+
+  .modes{ display:grid; gap:8px; margin:0 0 22px; }
+  .mode{
+    display:flex; align-items:center; gap:10px; font-size:13px; color:var(--muted);
+    border:1px solid var(--line); border-radius:10px; padding:10px 12px;
+    background:rgba(255,255,255,.02);
+  }
+  .mode b{ color:var(--ink); font-weight:600; }
+  .dot{ width:7px; height:7px; border-radius:50%; background:var(--brand); flex:none; box-shadow:0 0 12px var(--brand); }
+  .dot.warm{ background:var(--accent); box-shadow:0 0 12px var(--accent); }
+
+  button, select{ font:inherit; color:inherit; cursor:pointer; }
+  .btn{
+    appearance:none; border:1px solid var(--line); background:rgba(255,255,255,.05);
+    color:var(--ink); border-radius:10px; padding:10px 14px; font-size:13px; font-weight:550;
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    transition:background .18s ease, border-color .18s ease, transform .12s ease;
+  }
+  .btn:hover{ background:rgba(255,255,255,.10); border-color:rgba(238,241,246,.24); }
+  .btn:active{ transform:translateY(1px); }
+  .btn.primary{
+    background:var(--brand); border-color:var(--brand); color:#04121a; font-weight:650;
+    box-shadow:0 10px 30px rgba(34,211,238,.28);
+  }
+  .btn.primary:hover{ background:color-mix(in srgb, var(--brand) 88%, white); }
+  .btn.block{ width:100%; padding:14px 16px; font-size:15px; }
+  .btn.ghost{ background:transparent; }
+  .btn[aria-pressed="true"]{ background:rgba(34,211,238,.16); border-color:rgba(34,211,238,.55); color:var(--ink); }
+
+  .row{ display:flex; gap:10px; align-items:center; }
+  .hint{ margin-top:14px; font-size:12px; color:rgba(238,241,246,.4); }
+
+  /* ============================================================
+     HUD  (top-right collapsible drawer)
+     ============================================================ */
+  #hud{
+    position:fixed; top:16px; right:16px; z-index:30;
+    width:274px; padding:12px; user-select:none;
+  }
+  #hud header{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .title{ font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+  #drawer{ display:grid; gap:12px; margin-top:12px; }
+  #hud.collapsed #drawer{ display:none; }
+
+  .field{ display:grid; gap:6px; }
+  .field label{ font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+  .field .val{ color:var(--brand); font-family:ui-monospace, monospace; }
+  .lbl-row{ display:flex; justify-content:space-between; align-items:baseline; }
+
+  select{
+    appearance:none; width:100%; padding:9px 10px; font-size:13px;
+    background:rgba(255,255,255,.05); border:1px solid var(--line);
+    border-radius:10px; color:var(--ink);
+  }
+  select option{ background:#14141c; color:#eef1f6; }
+
+  input[type=range]{
+    -webkit-appearance:none; appearance:none; width:100%; height:22px; background:transparent; cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-runnable-track{ height:4px; border-radius:999px; background:rgba(238,241,246,.16); }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; width:14px; height:14px; margin-top:-5px; border-radius:50%;
+    background:var(--brand); border:0; box-shadow:0 0 12px rgba(34,211,238,.7);
+  }
+  input[type=range]::-moz-range-track{ height:4px; border-radius:999px; background:rgba(238,241,246,.16); }
+  input[type=range]::-moz-range-thumb{ width:14px; height:14px; border:0; border-radius:50%; background:var(--brand); }
+
+  .toggles{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .toggles .btn{ padding:9px 8px; font-size:12px; }
+  .actions{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .sep{ height:1px; background:var(--line); }
+
+  /* Live signal meters */
+  .meters{ display:grid; gap:6px; }
+  .meter{ display:grid; grid-template-columns:34px 1fr; gap:8px; align-items:center; font-size:10px; color:var(--muted); }
+  .bar{ height:5px; border-radius:999px; background:rgba(238,241,246,.12); overflow:hidden; }
+  .bar > i{ display:block; height:100%; width:0%; background:var(--brand); border-radius:999px; transition:width .06s linear; }
+  .bar.warm > i{ background:var(--accent); }
+
+  /* Status strip (bottom-left) */
+  #status{
+    position:fixed; left:16px; bottom:16px; z-index:30;
+    display:flex; gap:8px; flex-wrap:wrap; padding:8px 10px;
+    font-size:11px; font-family:ui-monospace, monospace; color:var(--muted);
+  }
+  #status span{ display:inline-flex; align-items:center; gap:6px; }
+  #status b{ color:var(--ink); font-weight:600; }
+  .pill{ padding:2px 8px; border-radius:999px; border:1px solid var(--line); }
+  .pill.on{ color:var(--brand); border-color:rgba(34,211,238,.45); }
+  .pill.off{ color:rgba(238,241,246,.35); }
+
+  #toast{
+    position:fixed; left:50%; bottom:26px; transform:translate(-50%, 16px); z-index:40;
+    padding:10px 16px; font-size:13px; opacity:0; pointer-events:none;
+    transition:opacity .25s ease, transform .25s ease;
+  }
+  #toast.show{ opacity:1; transform:translate(-50%, 0); }
+
+  @media (max-width:640px){
+    #hud{ width:calc(100vw - 32px); }
+    #status{ font-size:10px; }
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{ transition-duration:.01ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     START OVERLAY
+     ============================================================ -->
+<div id="overlay">
+  <div class="card glass" role="dialog" aria-modal="true" aria-labelledby="ttl">
+    <p class="eyebrow">Hack the Arts · Generative Instrument</p>
+    <h1 id="ttl">Synesthetic Canvas</h1>
+    <p>Paint with motion, sound and light. Your gestures drive a 20,000-particle curl-noise field — and the canvas answers back with its own generative pentatonic score.</p>
+
+    <div class="modes">
+      <div class="mode"><span class="dot"></span><span><b>Mouse / Touch</b> — velocity becomes turbulence &amp; attraction</span></div>
+      <div class="mode"><span class="dot"></span><span><b>Microphone</b> — bass pulses, mids steer, treble shimmers</span></div>
+      <div class="mode"><span class="dot warm"></span><span><b>Webcam</b> — frame-difference motion ignites the field</span></div>
+    </div>
+
+    <button id="startBtn" class="btn primary block" type="button">Click to Start Experience</button>
+    <div class="row" style="margin-top:10px">
+      <button id="startSilentBtn" class="btn ghost block" type="button">Continue without mic &amp; camera</button>
+    </div>
+    <p class="hint">Permissions are optional — denied devices fall back to a synthetic internal beat. Headphones recommended.</p>
+  </div>
+</div>
+
+<!-- ============================================================
+     HUD / CONTROL PANEL
+     ============================================================ -->
+<section id="hud" class="glass" aria-label="Canvas controls">
+  <header>
+    <span class="title">Control Deck</span>
+    <button id="collapseBtn" class="btn" type="button" aria-expanded="true" title="Collapse panel">–</button>
+  </header>
+
+  <div id="drawer">
+    <div class="field">
+      <label for="preset">Aesthetic Preset</label>
+      <select id="preset">
+        <option value="0">Cyberpunk Neon</option>
+        <option value="1">Cosmic Abyssal</option>
+        <option value="2">Bio-Luminescence</option>
+        <option value="3">Solar Flare</option>
+        <option value="4">Monochrome Fluid</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <div class="lbl-row"><label for="count">Particles</label><span class="val" id="countVal">9000</span></div>
+      <input id="count" type="range" min="1500" max="20000" step="500" value="9000" />
+    </div>
+
+    <div class="field">
+      <div class="lbl-row"><label for="trail">Trail Persistence</label><span class="val" id="trailVal">88%</span></div>
+      <input id="trail" type="range" min="0" max="100" step="1" value="88" />
+    </div>
+
+    <div class="field">
+      <div class="lbl-row"><label for="sens">Mic Sensitivity</label><span class="val" id="sensVal">1.0×</span></div>
+      <input id="sens" type="range" min="0" max="300" step="5" value="100" />
+    </div>
+
+    <div class="sep"></div>
+
+    <div class="toggles">
+      <button id="micBtn"  class="btn" type="button" aria-pressed="false">Mic Input</button>
+      <button id="camBtn"  class="btn" type="button" aria-pressed="false">Webcam Motion</button>
+      <button id="sndBtn"  class="btn" type="button" aria-pressed="true">Gen. Sound</button>
+      <button id="flowBtn" class="btn" type="button" aria-pressed="false">Show Flow</button>
+    </div>
+
+    <div class="meters" aria-hidden="true">
+      <div class="meter"><span>BASS</span><div class="bar"><i id="mBass"></i></div></div>
+      <div class="meter"><span>MID</span><div class="bar"><i id="mMid"></i></div></div>
+      <div class="meter"><span>TREB</span><div class="bar"><i id="mTreb"></i></div></div>
+      <div class="meter"><span>MOTION</span><div class="bar warm"><i id="mMotion"></i></div></div>
+    </div>
+
+    <div class="sep"></div>
+
+    <div class="actions">
+      <button id="shotBtn" class="btn" type="button">Capture PNG</button>
+      <button id="fsBtn"   class="btn" type="button">Fullscreen</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     STATUS STRIP
+     ============================================================ -->
+<div id="status" class="glass">
+  <span><b id="fps">60</b> fps</span>
+  <span class="pill" id="pMic">mic idle</span>
+  <span class="pill" id="pCam">cam idle</span>
+  <span class="pill" id="pSnd">audio idle</span>
+  <span id="hintTxt">drag to paint · <b>H</b> hide ui · <b>1–5</b> presets · <b>S</b> save</span>
+</div>
+
+<div id="toast" class="glass" role="status" aria-live="polite"></div>
+
+<script>
+/* ==================================================================
+   SYNESTHETIC CANVAS
+   ------------------------------------------------------------------
+   Architecture
+     1. PRESETS ............ palette + physics personality
+     2. AudioEngine ........ mic FFT analysis (Web Audio AnalyserNode)
+     3. Synth .............. generative pentatonic voice + reverb
+     4. MotionEngine ....... webcam frame differencing
+     5. ParticleField ...... curl/Perlin noise particle physics
+     6. p5 lifecycle ....... setup / draw / resize / input
+     7. UI ................. HUD wiring, hotkeys, toasts
+   All heavy allocation happens once; draw() reuses flat arrays.
+   ================================================================== */
+
+'use strict';
+
+/* ---------------- 1. PRESETS ---------------------------------- */
+/* hue values are in HSB degrees (0-360). */
+const PRESETS = [
+  { name:'Cyberpunk Neon',   bg:[262, 45, 5],  hues:[290, 195, 320, 175], sat:[70,100], bri:[85,100],
+    damping:0.945, turbulence:1.35, noiseScale:0.0026, flowSpeed:0.0022, sizeBase:2.1, glow:1.0 },
+  { name:'Cosmic Abyssal',   bg:[248, 60, 4],  hues:[250, 275, 45, 210],  sat:[25, 90], bri:[80,100],
+    damping:0.983, turbulence:0.75, noiseScale:0.0014, flowSpeed:0.0011, sizeBase:1.7, glow:0.9 },
+  { name:'Bio-Luminescence', bg:[186, 55, 5],  hues:[150, 172, 196, 128], sat:[55, 95], bri:[80,100],
+    damping:0.962, turbulence:0.95, noiseScale:0.0019, flowSpeed:0.0016, sizeBase:2.3, glow:1.05 },
+  { name:'Solar Flare',      bg:[15,  60, 5],  hues:[18,  3,  40,  32],   sat:[75,100], bri:[88,100],
+    damping:0.930, turbulence:1.9,  noiseScale:0.0032, flowSpeed:0.0030, sizeBase:2.0, glow:1.15 },
+  { name:'Monochrome Fluid', bg:[0,   0,  3],  hues:[0, 0, 0, 210],       sat:[0,  12], bri:[92,100],
+    damping:0.975, turbulence:0.6,  noiseScale:0.0011, flowSpeed:0.0009, sizeBase:1.9, glow:0.85 },
+];
+
+/* Global tunables driven by the HUD */
+const state = {
+  presetIndex: 0,
+  particleCount: 9000,
+  trail: 0.88,          // 0 = no trails, 1 = infinite
+  micSensitivity: 1.0,
+  micOn: false,
+  camOn: false,
+  soundOn: true,
+  showFlow: false,
+  uiVisible: true,
+};
+
+/* Live analysis values consumed by the physics each frame */
+const signal = { bass:0, mid:0, treble:0, motion:0, mx:0, my:0, energy:0, pulse:0 };
+
+/* ---------------- 2. AUDIO ENGINE (mic FFT) ------------------- */
+const AudioEngine = {
+  ctx:null, analyser:null, bins:null, stream:null, ready:false,
+
+  async ensureContext(){
+    if(!this.ctx){
+      const AC = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AC();
+    }
+    if(this.ctx.state === 'suspended') await this.ctx.resume();
+    return this.ctx;
+  },
+
+  async enableMic(){
+    try{
+      await this.ensureContext();
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:false }
+      });
+      const src = this.ctx.createMediaStreamSource(this.stream);
+      this.analyser = this.ctx.createAnalyser();
+      this.analyser.fftSize = 2048;               // 1024 usable bins
+      this.analyser.smoothingTimeConstant = 0.78; // temporal smoothing
+      src.connect(this.analyser);                 // analysis only — never to destination (no feedback)
+      this.bins = new Uint8Array(this.analyser.frequencyBinCount);
+      this.ready = true;
+      return true;
+    }catch(err){
+      console.log('[v0] mic denied/unavailable:', err && err.name);
+      this.ready = false;
+      return false;
+    }
+  },
+
+  disableMic(){
+    if(this.stream){ this.stream.getTracks().forEach(t=>t.stop()); this.stream = null; }
+    this.analyser = null; this.ready = false;
+  },
+
+  /* Average byte energy across a Hz range -> 0..1 */
+  band(loHz, hiHz){
+    if(!this.ready) return 0;
+    const binHz = this.ctx.sampleRate / this.analyser.fftSize;
+    const lo = Math.max(0, Math.floor(loHz / binHz));
+    const hi = Math.min(this.bins.length - 1, Math.ceil(hiHz / binHz));
+    let sum = 0;
+    for(let i = lo; i <= hi; i++) sum += this.bins[i];
+    return (sum / ((hi - lo + 1) * 255));
+  },
+
+  update(){
+    if(this.ready) this.analyser.getByteFrequencyData(this.bins);
+  }
+};
+
+/* ---------------- 3. GENERATIVE SYNTH ------------------------- */
+/* C major pentatonic across two octaves — always consonant. */
+const SCALE = [130.81,146.83,164.81,196.00,220.00,261.63,293.66,329.63,392.00,440.00,523.25];
+
+const Synth = {
+  ready:false, master:null, reverb:null, wet:null, lastNote:0, noteIx:0,
+
+  async init(){
+    const ctx = await AudioEngine.ensureContext();
+    if(this.ready) return;
+
+    this.master = ctx.createGain();
+    this.master.gain.value = 0.0001;
+
+    // Gentle limiter keeps dense arpeggios from clipping.
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -18; comp.knee.value = 16; comp.ratio.value = 6;
+
+    // Convolution reverb from a procedurally generated decaying-noise IR.
+    this.reverb = ctx.createConvolver();
+    this.reverb.buffer = this._impulse(ctx, 2.6, 2.4);
+    this.wet = ctx.createGain();
+    this.wet.gain.value = 0.35;
+
+    this.master.connect(comp);
+    this.master.connect(this.wet);
+    this.wet.connect(this.reverb);
+    this.reverb.connect(comp);
+    comp.connect(ctx.destination);
+
+    // Fade in to avoid a startup click.
+    this.master.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 1.2);
+    this.ready = true;
+  },
+
+  _impulse(ctx, seconds, decay){
+    const len = Math.floor(ctx.sampleRate * seconds);
+    const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+    for(let c = 0; c < 2; c++){
+      const d = buf.getChannelData(c);
+      for(let i = 0; i < len; i++){
+        d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+      }
+    }
+    return buf;
+  },
+
+  /* nx, ny in 0..1 (screen space) · vel 0..1 */
+  note(nx, ny, vel){
+    if(!this.ready || !state.soundOn) return;
+    const ctx = AudioEngine.ctx;
+    const t = ctx.currentTime;
+
+    // X -> pitch (pentatonic quantised), Y -> filter cutoff (top = bright)
+    const idx  = Math.min(SCALE.length - 1, Math.floor(nx * SCALE.length));
+    const freq = SCALE[idx];
+    const cutoff = 260 + Math.pow(1 - ny, 2.1) * 4600;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = cutoff;
+    filter.Q.value = 6;
+
+    const g = ctx.createGain();
+    const peak = 0.06 + vel * 0.14;
+    const dur  = 0.9 + (1 - vel) * 1.6;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(peak, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+    // Two detuned voices = shimmering pad character.
+    const oscA = ctx.createOscillator(); oscA.type = 'triangle'; oscA.frequency.value = freq;
+    const oscB = ctx.createOscillator(); oscB.type = 'sine';
+    oscB.frequency.value = freq * 2;
+    oscB.detune.value = 6;
+
+    const bGain = ctx.createGain(); bGain.gain.value = 0.35;
+    oscA.connect(filter);
+    oscB.connect(bGain); bGain.connect(filter);
+    filter.connect(g); g.connect(this.master);
+
+    oscA.start(t); oscB.start(t);
+    oscA.stop(t + dur + 0.05); oscB.stop(t + dur + 0.05);
+  },
+
+  /* Sub-bass heartbeat used by the fallback "synthetic beat" mode. */
+  kick(vel){
+    if(!this.ready || !state.soundOn) return;
+    const ctx = AudioEngine.ctx, t = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'sine';
+    const g = ctx.createGain();
+    o.frequency.setValueAtTime(120, t);
+    o.frequency.exponentialRampToValueAtTime(42, t + 0.28);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.22 * (0.5 + vel), t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.45);
+  },
+
+  setMuted(muted){
+    if(!this.ready) return;
+    const ctx = AudioEngine.ctx;
+    this.master.gain.cancelScheduledValues(ctx.currentTime);
+    this.master.gain.linearRampToValueAtTime(muted ? 0.0001 : 0.5, ctx.currentTime + 0.25);
+  }
+};
+
+/* ---------------- 4. WEBCAM MOTION ENGINE -------------------- */
+/* Downscaled frame differencing -> magnitude + centroid force. */
+const MotionEngine = {
+  capture:null, prev:null, ready:false, W:64, H:48,
+  cx:0, cy:0, mag:0,
+
+  async enable(){
+    try{
+      // Probe permission first so a denial never leaves a dead <video>.
+      const probe = await navigator.mediaDevices.getUserMedia({ video:{ width:320, height:240 } });
+      probe.getTracks().forEach(t=>t.stop());
+
+      this.capture = createCapture(VIDEO, ()=>{});
+      this.capture.size(this.W, this.H);
+      this.capture.hide();
+      this.prev = null;
+      this.ready = true;
+      return true;
+    }catch(err){
+      console.log('[v0] webcam denied/unavailable:', err && err.name);
+      this.ready = false;
+      return false;
+    }
+  },
+
+  disable(){
+    if(this.capture){
+      const el = this.capture.elt;
+      if(el && el.srcObject) el.srcObject.getTracks().forEach(t=>t.stop());
+      this.capture.remove();
+      this.capture = null;
+    }
+    this.prev = null; this.ready = false; this.mag = 0;
+  },
+
+  update(){
+    if(!this.ready || !this.capture) return;
+    this.capture.loadPixels();
+    const px = this.capture.pixels;
+    if(!px || px.length < 4) return;
+
+    if(!this.prev || this.prev.length !== px.length){
+      this.prev = new Uint8ClampedArray(px);
+      return;
+    }
+
+    let total = 0, sx = 0, sy = 0, hits = 0;
+    const W = this.W, H = this.H, prev = this.prev;
+    // Sample every 2nd pixel on both axes for speed (~768 samples).
+    for(let y = 0; y < H; y += 2){
+      for(let x = 0; x < W; x += 2){
+        const i = (y * W + x) * 4;
+        const d = Math.abs(px[i] - prev[i]) + Math.abs(px[i+1] - prev[i+1]) + Math.abs(px[i+2] - prev[i+2]);
+        if(d > 48){ total += d; sx += x; sy += y; hits++; }
+      }
+    }
+    prev.set(px);
+
+    const raw = Math.min(1, total / 30000);
+    this.mag = this.mag * 0.82 + raw * 0.18;            // temporal smoothing
+    if(hits > 4){
+      // Mirror X so movement feels like a mirror, not a camera.
+      const nx = 1 - (sx / hits) / W;
+      const ny = (sy / hits) / H;
+      this.cx = lerp(this.cx, nx, 0.16);
+      this.cy = lerp(this.cy, ny, 0.16);
+    }
+  }
+};
+
+/* ---------------- 5. PARTICLE FIELD -------------------------- */
+/* Flat typed arrays (SoA layout) — zero allocation inside draw(). */
+const MAX_PARTICLES = 20000;
+const P = {
+  x:new Float32Array(MAX_PARTICLES),  y:new Float32Array(MAX_PARTICLES),
+  vx:new Float32Array(MAX_PARTICLES), vy:new Float32Array(MAX_PARTICLES),
+  life:new Float32Array(MAX_PARTICLES), max:new Float32Array(MAX_PARTICLES),
+  mass:new Float32Array(MAX_PARTICLES), hue:new Float32Array(MAX_PARTICLES),
+  size:new Float32Array(MAX_PARTICLES),
+};
+
+/* Rendering is batched by hue bucket: one beginShape(POINTS) draw call per
+   bucket instead of 20k individual point() calls. This is what keeps a
+   20,000-particle WebGL field at 60fps. */
+const BUCKETS = 18;
+const bucketX = [], bucketY = [], bucketN = new Int32Array(BUCKETS);
+for(let b = 0; b < BUCKETS; b++){
+  bucketX.push(new Float32Array(MAX_PARTICLES));
+  bucketY.push(new Float32Array(MAX_PARTICLES));
+}
+
+let shockwaves = [];  // {r, life} bass-triggered rings
+
+function preset(){ return PRESETS[state.presetIndex]; }
+
+function spawn(i, atX, atY){
+  const p = preset();
+  P.x[i] = (atX !== undefined) ? atX : random(-width/2, width/2);
+  P.y[i] = (atY !== undefined) ? atY : random(-height/2, height/2);
+  P.vx[i] = random(-0.4, 0.4);
+  P.vy[i] = random(-0.4, 0.4);
+  P.max[i]  = random(140, 520);
+  P.life[i] = random(P.max[i]);
+  P.mass[i] = random(0.6, 1.9);
+  P.hue[i]  = (random(p.hues) + random(-14, 14) + 360) % 360;
+  P.size[i] = p.sizeBase * random(0.55, 1.9);
+}
+
+function initField(){
+  for(let i = 0; i < MAX_PARTICLES; i++) spawn(i);
+}
+
+function reHue(){
+  const p = preset();
+  for(let i = 0; i < MAX_PARTICLES; i++){
+    P.hue[i] = (random(p.hues) + random(-14, 14) + 360) % 360;
+    P.size[i] = p.sizeBase * random(0.55, 1.9);
+  }
+}
+
+/* ---------------- 6. p5 LIFECYCLE ---------------------------- */
+let smoothX = 0, smoothY = 0, cursorVel = 0, pressed = false;
+let flowT = 0, lastKick = 0, fpsSmooth = 60;
+
+function setup(){
+  const c = createCanvas(windowWidth, windowHeight, WEBGL);
+  c.parent(document.body);
+  pixelDensity(1);                 // perf: 1 device pixel per CSS pixel
+  colorMode(HSB, 360, 100, 100, 100);
+  noiseDetail(3, 0.5);
+  // Pure 2D-plane composition — depth testing would reject co-planar draws.
+  drawingContext.disable(drawingContext.DEPTH_TEST);
+  initField();
+  UI.mount();
+}
+
+function windowResized(){
+  resizeCanvas(windowWidth, windowHeight);
+  // Re-seed so particles never sit outside the new bounds.
+  for(let i = 0; i < MAX_PARTICLES; i++){
+    if(abs(P.x[i]) > width/2 || abs(P.y[i]) > height/2) spawn(i);
+  }
+}
+
+function draw(){
+  const p = preset();
+
+  /* --- 6a. gather inputs -------------------------------------- */
+  AudioEngine.update();
+  const gain = state.micSensitivity;
+  const targetBass = state.micOn ? min(1, AudioEngine.band(20, 140)   * 1.5 * gain) : 0;
+  const targetMid  = state.micOn ? min(1, AudioEngine.band(400, 2600) * 2.2 * gain) : 0;
+  const targetTreb = state.micOn ? min(1, AudioEngine.band(4000,14000)* 3.4 * gain) : 0;
+  signal.bass   = lerp(signal.bass,   targetBass, 0.35);
+  signal.mid    = lerp(signal.mid,    targetMid,  0.25);
+  signal.treble = lerp(signal.treble, targetTreb, 0.25);
+
+  if(state.camOn) MotionEngine.update();
+  signal.motion = state.camOn ? MotionEngine.mag : 0;
+
+  // Smoothed cursor + velocity (lerp removes pointer jitter).
+  smoothX = lerp(smoothX, mouseX - width/2,  0.16);
+  smoothY = lerp(smoothY, mouseY - height/2, 0.16);
+  cursorVel = lerp(cursorVel, constrain(dist(mouseX, mouseY, pmouseX, pmouseY) / 22, 0, 1), 0.2);
+
+  // FALLBACK MODE: with no mic and no camera, an internal pulse keeps the
+  // canvas alive so it is never static or blank.
+  let synthetic = 0;
+  if(!state.micOn && !state.camOn){
+    synthetic = pow(0.5 + 0.5 * sin(millis() * 0.0016), 3);
+    signal.bass = max(signal.bass, synthetic * 0.55);
+    signal.mid  = max(signal.mid,  0.12 + synthetic * 0.2);
+    if(state.soundOn && millis() - lastKick > 1900){ lastKick = millis(); Synth.kick(0.4); }
+  }
+
+  signal.energy = constrain(cursorVel * 0.9 + signal.mid * 0.8 + signal.motion * 1.1 + (pressed ? 0.35 : 0), 0, 1.6);
+
+  // Bass transient -> shockwave ring
+  signal.pulse = lerp(signal.pulse, signal.bass, 0.4);
+  if(signal.bass > 0.55 && shockwaves.length < 14 && frameCount % 6 === 0){
+    shockwaves.push({ r: 20, life: 1 });
+  }
+
+  /* --- 6b. trail fade ---------------------------------------- */
+  // Low-opacity full-screen wash: the classic motion-trail technique.
+  blendMode(BLEND);
+  noStroke();
+  const fade = map(1 - state.trail, 0, 1, 1.2, 46);
+  fill(p.bg[0], p.bg[1], p.bg[2], fade);
+  rectMode(CORNER);
+  rect(-width/2, -height/2, width, height);
+
+  /* --- 6c. physics + bucket fill ------------------------------ */
+  const n = state.particleCount;
+  const ns = p.noiseScale * (1 + signal.treble * 0.45);
+  flowT += p.flowSpeed * (0.6 + signal.mid * 2.4 + cursorVel * 1.2);
+  const turb = p.turbulence * (0.65 + signal.mid * 1.5 + cursorVel * 1.1);
+  const damp = p.damping - signal.bass * 0.02;
+  const halfW = width / 2, halfH = height / 2;
+
+  // Motion centroid mapped into canvas space (acts as a repulsor / igniter).
+  const mcx = (MotionEngine.cx - 0.5) * width;
+  const mcy = (MotionEngine.cy - 0.5) * height;
+
+  bucketN.fill(0);
+
+  for(let i = 0; i < n; i++){
+    // --- flow field force (Perlin noise curl approximation)
+    const a = noise(P.x[i] * ns + 1000, P.y[i] * ns + 1000, flowT) * TWO_PI * 2.4;
+    let fx = cos(a) * 0.14 * turb;
+    let fy = sin(a) * 0.14 * turb;
+
+    // --- cursor attraction, strength scales with gesture velocity
+    const dxc = smoothX - P.x[i], dyc = smoothY - P.y[i];
+    const d2  = dxc*dxc + dyc*dyc + 900;
+    const pull = (pressed ? 240 : 70) * (0.35 + cursorVel * 1.6) / d2;
+    fx += dxc * pull; fy += dyc * pull;
+
+    // --- webcam motion centroid pushes particles outward
+    if(signal.motion > 0.02){
+      const dxm = P.x[i] - mcx, dym = P.y[i] - mcy;
+      const dm2 = dxm*dxm + dym*dym + 2500;
+      const push = 9000 * signal.motion / dm2;
+      fx += dxm * push * 0.02; fy += dym * push * 0.02;
+    }
+
+    // --- bass shockwave: radial expansion from centre
+    if(signal.pulse > 0.12){
+      const dl = Math.sqrt(P.x[i]*P.x[i] + P.y[i]*P.y[i]) + 1;
+      const k = signal.pulse * 0.5;
+      fx += (P.x[i] / dl) * k; fy += (P.y[i] / dl) * k;
+    }
+
+    const im = 1 / P.mass[i];
+    P.vx[i] = (P.vx[i] + fx * im) * damp;
+    P.vy[i] = (P.vy[i] + fy * im) * damp;
+    P.x[i] += P.vx[i];
+    P.y[i] += P.vy[i];
+
+    // --- lifetime + boundary respawn
+    P.life[i] += 1 + signal.treble * 2.2;
+    if(P.life[i] > P.max[i] || P.x[i] < -halfW || P.x[i] > halfW || P.y[i] < -halfH || P.y[i] > halfH){
+      // Fast gestures re-seed near the cursor: painting feels direct.
+      if(cursorVel > 0.12 && random() < 0.55) spawn(i, smoothX + random(-60,60), smoothY + random(-60,60));
+      else spawn(i);
+      P.life[i] = 0;
+    }
+
+    // --- bucket by hue for batched rendering
+    const b = ((P.hue[i] / 360) * BUCKETS) | 0;
+    const bi = b < 0 ? 0 : (b >= BUCKETS ? BUCKETS - 1 : b);
+    const k2 = bucketN[bi]++;
+    bucketX[bi][k2] = P.x[i];
+    bucketY[bi][k2] = P.y[i];
+  }
+
+  /* --- 6d. render particles (additive glow) ------------------- */
+  blendMode(ADD);
+  noFill();
+  const satLo = p.sat[0], satHi = p.sat[1], briLo = p.bri[0], briHi = p.bri[1];
+  const shimmer = signal.treble;
+  const alpha = (28 + signal.energy * 26) * p.glow;
+  const w = p.sizeBase * (0.85 + signal.bass * 1.9 + signal.energy * 0.35);
+
+  for(let b = 0; b < BUCKETS; b++){
+    const cnt = bucketN[b];
+    if(cnt === 0) continue;
+    const hue = (b + 0.5) * (360 / BUCKETS);
+    const sat = lerp(satHi, satLo, shimmer * 0.55);
+    const bri = lerp(briLo, briHi, 0.35 + shimmer * 0.65);
+    stroke(hue, sat, bri, alpha);
+    strokeWeight(w * (1 + (b % 3) * 0.35));
+    const bxs = bucketX[b], bys = bucketY[b];
+    beginShape(POINTS);
+    for(let k = 0; k < cnt; k++) vertex(bxs[k], bys[k]);
+    endShape();
+  }
+
+  /* --- 6e. shockwave rings ----------------------------------- */
+  for(let s = shockwaves.length - 1; s >= 0; s--){
+    const sw = shockwaves[s];
+    sw.r += 14 + signal.bass * 26;
+    sw.life -= 0.022;
+    if(sw.life <= 0 || sw.r > max(width, height)){ shockwaves.splice(s, 1); continue; }
+    noFill();
+    stroke(preset().hues[1], 60, 100, sw.life * 22);
+    strokeWeight(1.5);
+    circle(0, 0, sw.r * 2);
+  }
+
+  /* --- 6f. optional flow-field debug overlay ------------------ */
+  if(state.showFlow){
+    stroke(0, 0, 100, 10);
+    strokeWeight(1);
+    for(let gx = -halfW; gx < halfW; gx += 60){
+      for(let gy = -halfH; gy < halfH; gy += 60){
+        const a = noise(gx * ns + 1000, gy * ns + 1000, flowT) * TWO_PI * 2.4;
+        line(gx, gy, gx + cos(a) * 22, gy + sin(a) * 22);
+      }
+    }
+  }
+
+  /* --- 6g. reverse synesthesia: canvas plays itself ----------- */
+  if(state.soundOn && Synth.ready){
+    const interval = map(signal.energy, 0, 1.6, 620, 110, true);
+    if(millis() - Synth.lastNote > interval && (signal.energy > 0.07 || synthetic > 0.8)){
+      Synth.lastNote = millis();
+      const nx = constrain((smoothX + halfW) / width, 0, 1);
+      const ny = constrain((smoothY + halfH) / height, 0, 1);
+      Synth.note(nx, ny, constrain(signal.energy / 1.6, 0.05, 1));
+      if(signal.bass > 0.6 && millis() - lastKick > 320){ lastKick = millis(); Synth.kick(signal.bass); }
+    }
+  }
+
+  /* --- 6h. HUD telemetry (throttled) ------------------------- */
+  fpsSmooth = lerp(fpsSmooth, frameRate(), 0.08);
+  if(frameCount % 6 === 0) UI.telemetry(fpsSmooth);
+}
+
+/* ---------------- INPUT ------------------------------------- */
+function mousePressed(){ pressed = true; }
+function mouseReleased(){ pressed = false; }
+function touchStarted(){ pressed = true; }
+function touchEnded(){ pressed = false; }
+
+function keyPressed(){
+  const k = (key || '').toLowerCase();
+  if(k >= '1' && k <= '5'){ UI.setPreset(parseInt(k,10) - 1); }
+  else if(k === 'h'){ UI.toggleChrome(); }
+  else if(k === 's'){ UI.capture(); }
+  else if(k === 'f'){ UI.fullscreen(); }
+  else if(k === 'm'){ UI.el.sndBtn.click(); }
+}
+
+/* ---------------- 7. UI LAYER -------------------------------- */
+const UI = {
+  el:{},
+
+  mount(){
+    const id = s => document.getElementById(s);
+    this.el = {
+      overlay:id('overlay'), startBtn:id('startBtn'), startSilentBtn:id('startSilentBtn'),
+      hud:id('hud'), collapseBtn:id('collapseBtn'),
+      preset:id('preset'), count:id('count'), countVal:id('countVal'),
+      trail:id('trail'), trailVal:id('trailVal'), sens:id('sens'), sensVal:id('sensVal'),
+      micBtn:id('micBtn'), camBtn:id('camBtn'), sndBtn:id('sndBtn'), flowBtn:id('flowBtn'),
+      shotBtn:id('shotBtn'), fsBtn:id('fsBtn'),
+      mBass:id('mBass'), mMid:id('mMid'), mTreb:id('mTreb'), mMotion:id('mMotion'),
+      fps:id('fps'), pMic:id('pMic'), pCam:id('pCam'), pSnd:id('pSnd'),
+      status:id('status'), toast:id('toast'),
+    };
+
+    this.el.startBtn.addEventListener('click', ()=> this.start(true));
+    this.el.startSilentBtn.addEventListener('click', ()=> this.start(false));
+
+    this.el.collapseBtn.addEventListener('click', ()=>{
+      const c = this.el.hud.classList.toggle('collapsed');
+      this.el.collapseBtn.textContent = c ? '+' : '–';
+      this.el.collapseBtn.setAttribute('aria-expanded', String(!c));
+    });
+
+    this.el.preset.addEventListener('change', e => this.setPreset(parseInt(e.target.value,10)));
+
+    this.el.count.addEventListener('input', e=>{
+      state.particleCount = parseInt(e.target.value,10);
+      this.el.countVal.textContent = state.particleCount.toLocaleString();
+    });
+    this.el.trail.addEventListener('input', e=>{
+      state.trail = parseInt(e.target.value,10) / 100;
+      this.el.trailVal.textContent = e.target.value + '%';
+    });
+    this.el.sens.addEventListener('input', e=>{
+      state.micSensitivity = parseInt(e.target.value,10) / 100;
+      this.el.sensVal.textContent = state.micSensitivity.toFixed(1) + '×';
+    });
+
+    this.el.micBtn.addEventListener('click', async ()=>{
+      if(state.micOn){ AudioEngine.disableMic(); state.micOn = false; this.toast('Microphone off'); }
+      else{
+        const ok = await AudioEngine.enableMic();
+        state.micOn = ok;
+        this.toast(ok ? 'Microphone live — make some noise' : 'Mic unavailable · fallback pulse active');
+      }
+      this.sync();
+    });
+
+    this.el.camBtn.addEventListener('click', async ()=>{
+      if(state.camOn){ MotionEngine.disable(); state.camOn = false; this.toast('Webcam off'); }
+      else{
+        const ok = await MotionEngine.enable();
+        state.camOn = ok;
+        this.toast(ok ? 'Webcam motion armed — move around' : 'Webcam unavailable · fallback pulse active');
+      }
+      this.sync();
+    });
+
+    this.el.sndBtn.addEventListener('click', async ()=>{
+      state.soundOn = !state.soundOn;
+      if(state.soundOn) await Synth.init();
+      Synth.setMuted(!state.soundOn);
+      this.toast(state.soundOn ? 'Generative sound on' : 'Muted');
+      this.sync();
+    });
+
+    this.el.flowBtn.addEventListener('click', ()=>{
+      state.showFlow = !state.showFlow; this.sync();
+    });
+
+    this.el.shotBtn.addEventListener('click', ()=> this.capture());
+    this.el.fsBtn.addEventListener('click', ()=> this.fullscreen());
+
+    this.sync();
+  },
+
+  async start(withDevices){
+    this.el.overlay.classList.add('hidden');
+    await Synth.init();                 // user gesture unlocks AudioContext
+    Synth.setMuted(!state.soundOn);
+
+    if(withDevices){
+      const mic = await AudioEngine.enableMic();
+      state.micOn = mic;
+      const cam = await MotionEngine.enable();
+      state.camOn = cam;
+      if(!mic && !cam) this.toast('Devices unavailable — mouse/touch mode with synthetic beat');
+      else this.toast('Move, speak, and drag to paint');
+    }else{
+      this.toast('Mouse/touch mode — drag to paint');
+    }
+    this.sync();
+  },
+
+  setPreset(i){
+    if(i < 0 || i >= PRESETS.length) return;
+    state.presetIndex = i;
+    this.el.preset.value = String(i);
+    reHue();
+    shockwaves.length = 0;
+    this.toast(PRESETS[i].name);
+  },
+
+  capture(){
+    saveCanvas('Synesthetic_Canvas_Art', 'png');
+    this.toast('Artwork saved as PNG');
+  },
+
+  fullscreen(){
+    const d = document;
+    if(!d.fullscreenElement){
+      (d.documentElement.requestFullscreen ? d.documentElement.requestFullscreen() : Promise.reject())
+        .catch(()=> this.toast('Fullscreen blocked in embedded view'));
+    }else{
+      d.exitFullscreen && d.exitFullscreen();
+    }
+  },
+
+  toggleChrome(){
+    state.uiVisible = !state.uiVisible;
+    const v = state.uiVisible ? '' : 'none';
+    this.el.hud.style.display = v;
+    this.el.status.style.display = v;
+  },
+
+  sync(){
+    const set = (btn, on) => btn.setAttribute('aria-pressed', String(!!on));
+    set(this.el.micBtn,  state.micOn);
+    set(this.el.camBtn,  state.camOn);
+    set(this.el.sndBtn,  state.soundOn);
+    set(this.el.flowBtn, state.showFlow);
+
+    const pill = (el, on, onTxt, offTxt) => {
+      el.textContent = on ? onTxt : offTxt;
+      el.className = 'pill ' + (on ? 'on' : 'off');
+    };
+    pill(this.el.pMic, state.micOn, 'mic live', 'mic off');
+    pill(this.el.pCam, state.camOn, 'cam live', 'cam off');
+    pill(this.el.pSnd, state.soundOn && Synth.ready, 'audio on', 'audio off');
+  },
+
+  telemetry(fps){
+    this.el.fps.textContent = Math.round(fps);
+    this.el.mBass.style.width   = (signal.bass   * 100).toFixed(0) + '%';
+    this.el.mMid.style.width    = (signal.mid    * 100).toFixed(0) + '%';
+    this.el.mTreb.style.width   = (signal.treble * 100).toFixed(0) + '%';
+    this.el.mMotion.style.width = (signal.motion * 100).toFixed(0) + '%';
+  },
+
+  _t:null,
+  toast(msg){
+    const t = this.el.toast;
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(this._t);
+    this._t = setTimeout(()=> t.classList.remove('show'), 2200);
+  }
+};
+
+/* Keep the AudioContext alive when returning to the tab. */
+document.addEventListener('visibilitychange', ()=>{
+  if(!document.hidden && AudioEngine.ctx && AudioEngine.ctx.state === 'suspended'){
+    AudioEngine.ctx.resume();
+  }
+});
+</script>
+</body>
+</html>
