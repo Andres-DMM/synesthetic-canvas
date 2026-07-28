@@ -65,12 +65,3 @@ In alignment with the hackathon's transparency guidelines, **Synesthetic Canvas*
 * **Core Code Generation:** The initial boilerplate, p5.js flow field setup, and Web Audio API wiring were iteratively generated and refined using detailed conversational prompts.
 
 ---
-
-## 🚀 Getting Started (Run Locally)
-
-Because this app runs **100% on the frontend**, no backend installation, database setup, or API keys are required.
-
-### Quick Start
-1. Clone the repository:
-   ```bash
-   git clone [https://github.com/YOUR_USERNAME/synesthetic-canvas.git](https://github.com/YOUR_USERNAME/synesthetic-canvas.git)
